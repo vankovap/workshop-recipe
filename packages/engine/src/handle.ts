@@ -46,6 +46,10 @@ export async function handleJob(deps: HandleDeps, jobId: string): Promise<void> 
           detail,
         };
         await deps.cache.publishEvent(conflict);
+        // The progress key is shared by every replica, so a slide that someone else already persisted
+        // has already been counted. Counting it again is what drove progress past the deck length
+        // ("Slide 6 / 3" on a three-slide deck), so a conflicting write must not advance it.
+        continue;
       }
       const current = await deps.cache.incrProgress(jobId);
       const progress: JobEvent = {
