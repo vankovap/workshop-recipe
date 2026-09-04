@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { connect, JSONCodec } from "nats";
-import { NATS_JOBS_SUBJECT } from "@deck/shared";
+import { NATS_JOBS_QUEUE_GROUP, NATS_JOBS_SUBJECT } from "@deck/shared";
 
 export type JobHandler = (jobId: string) => Promise<void>;
 
@@ -15,16 +15,25 @@ type JobMessage = { jobId: string };
 export function createMemoryBus(): Bus {
   const events = new EventEmitter();
   events.setMaxListeners(50);
+  // The NATS bus delivers each job to one member of the queue group. This stand-in round-robins for
+  // the same reason: a test with two subscribers must see one render, not one per subscriber.
+  const handlers: JobHandler[] = [];
+  let next = 0;
+  events.on(NATS_JOBS_SUBJECT, (jobId: string) => {
+    const handler = handlers[next % handlers.length];
+    if (!handler) return;
+    next += 1;
+    void handler(jobId);
+  });
   return {
     async publish(jobId) {
       events.emit(NATS_JOBS_SUBJECT, jobId);
     },
     async subscribe(handler) {
-      events.on(NATS_JOBS_SUBJECT, (jobId: string) => {
-        void handler(jobId);
-      });
+      handlers.push(handler);
     },
     async close() {
+      handlers.length = 0;
       events.removeAllListeners();
     },
   };
@@ -67,7 +76,7 @@ export async function createNatsBus(
       nc.publish(subject, codec.encode({ jobId }));
     },
     async subscribe(handler) {
-      const sub = nc.subscribe(subject);
+      const sub = nc.subscribe(subject, { queue: NATS_JOBS_QUEUE_GROUP });
       void (async () => {
         for await (const msg of sub) {
           const { jobId } = codec.decode(msg.data);
